@@ -4,7 +4,16 @@ import { WeaverConfig } from '../types/config';
 import { ToolDefinition, ToolResult } from '../types/tool';
 import { Skill } from '../skills/types';
 import { buildSystemPrompt } from '../constants/systemPrompt';
-import { detectPhase, PHASE_COLORS, PHASE_LABELS, formatTokens, Phase } from '../components/theme';
+import {
+  Spinner,
+  displayToolStart,
+  displayToolOutput,
+  displayToolSuccess,
+  displayToolFail,
+  displayFileWrite,
+  displayAssistantText,
+  displayTokenInfo,
+} from '../utils/display';
 
 export interface Message {
   role: 'user' | 'assistant';
@@ -41,7 +50,6 @@ export async function query(
   });
 
   const systemPrompt = buildSystemPrompt(skills);
-
   conversation.messages.push({ role: 'user', content: userInput });
 
   const anthropicTools = tools.map((t) => ({
@@ -50,9 +58,12 @@ export async function query(
     input_schema: t.inputSchema as Anthropic.Tool['input_schema'],
   }));
 
+  const spinner = new Spinner();
   let continueLoop = true;
 
   while (continueLoop) {
+    spinner.start('思考中...');
+
     const response = await client.messages.create({
       model: config.model,
       max_tokens: 8192,
@@ -60,6 +71,8 @@ export async function query(
       tools: anthropicTools,
       messages: conversation.messages.map(formatMessage),
     });
+
+    spinner.stop();
 
     conversation.tokenUsage.input += response.usage.input_tokens;
     conversation.tokenUsage.output += response.usage.output_tokens;
@@ -70,9 +83,7 @@ export async function query(
     for (const block of response.content) {
       if (block.type === 'text') {
         assistantContent.push({ type: 'text', text: block.text });
-        const phase = detectPhase(block.text);
-        const colorFn = PHASE_COLORS[phase];
-        console.log('\n' + colorFn(block.text));
+        displayAssistantText(block.text);
       } else if (block.type === 'tool_use') {
         assistantContent.push({
           type: 'tool_use',
@@ -103,17 +114,32 @@ export async function query(
           continue;
         }
 
-        console.log(chalk.gray(`\n[执行] ${toolUse.name}: ${formatToolInput(toolUse.input)}`));
+        const detail = formatToolDetail(toolUse.name, toolUse.input);
+        displayToolStart(toolUse.name, detail);
 
+        spinner.start(`${toolUse.name} 执行中...`);
         const result: ToolResult = await tool.execute(toolUse.input);
-
-        if (result.timedOut) {
-          console.log(chalk.yellow('[超时]'));
-        }
+        spinner.stop();
 
         const output = truncateOutput(result.output, 10000);
-        if (output) {
-          console.log(chalk.gray(output));
+
+        if (result.timedOut) {
+          displayToolFail('超时');
+        } else if (result.exitCode !== 0) {
+          displayToolFail(`exit code ${result.exitCode}`);
+          displayToolOutput(output, 8);
+        } else {
+          if (toolUse.name === 'Write') {
+            displayFileWrite(String(toolUse.input.file_path), output);
+          } else if (toolUse.name === 'Edit') {
+            displayToolSuccess(`Edited ${toolUse.input.file_path}`);
+          } else if (toolUse.name === 'Read') {
+            const lines = output.split('\n').length;
+            displayToolSuccess(`Read ${lines} lines from ${toolUse.input.file_path}`);
+            displayToolOutput(output, 6);
+          } else {
+            displayToolOutput(output, 12);
+          }
         }
 
         toolResults.push({
@@ -136,9 +162,7 @@ export async function query(
 
   const { input, output } = conversation.tokenUsage;
   const elapsed = Math.round((Date.now() - conversation.startTime) / 1000);
-  const min = Math.floor(elapsed / 60);
-  const sec = elapsed % 60;
-  console.log(chalk.gray(`\n[${formatTokens(input + output)} tokens │ ${min}:${String(sec).padStart(2, '0')}]`));
+  displayTokenInfo(input, output, elapsed);
 }
 
 function formatMessage(msg: Message): Anthropic.MessageParam {
@@ -160,9 +184,18 @@ function formatMessage(msg: Message): Anthropic.MessageParam {
   };
 }
 
-function formatToolInput(input: Record<string, unknown>): string {
-  if (input.command) return String(input.command).slice(0, 80);
-  return JSON.stringify(input).slice(0, 80);
+function formatToolDetail(name: string, input: Record<string, unknown>): string {
+  switch (name) {
+    case 'Bash': return String(input.command || '').slice(0, 60);
+    case 'Read':
+    case 'Write':
+    case 'Edit': return String(input.file_path || '');
+    case 'Glob': return String(input.pattern || '');
+    case 'Grep': return String(input.pattern || '');
+    case 'Skill': return String(input.skill || '');
+    case 'Agent': return String(input.description || input.prompt || '').slice(0, 40);
+    default: return JSON.stringify(input).slice(0, 50);
+  }
 }
 
 function truncateOutput(output: string, maxLen: number): string {
