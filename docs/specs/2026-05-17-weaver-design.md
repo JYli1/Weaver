@@ -126,30 +126,84 @@ type ExecBackend =
 
 ### 6.1 机制
 
-完整复用 Claude Code 的 skill 基础设施：
+完整复用 Claude Code 的 skill 基础设施，不做简化。Skill 不仅仅是提示词，而是一套完整的能力系统，支持脚本执行、子 agent 定义、跨 skill 调用、渐进式上下文加载等。
+
+核心机制保留：
 - SkillTool — LM 通过 tool call 调用 skill
-- Inline 模式 — skill 内容注入为 user message
-- Fork 模式 — 在子 agent 中执行
+- Inline 模式 — skill 内容注入为 user message，LM 按指令执行
+- Fork 模式 — 在子 agent 中执行，返回结果
 - `/skill` 命令 — 用户管理 skill
+- `allowed-tools` — 工具白名单，限制 skill 可用的工具
+- `$ARGUMENTS` — 参数替换机制
+- 跨 skill 调用 — skill 可以调用其他 skill（通过 `/skill-name` 或 `SkillTool`）
+- 渐进式上下文加载 — metadata 常驻 → SKILL.md 按需加载 → 参考文件按需读取
+- 条件激活 — `paths` 字段支持基于文件路径的条件触发
 
-### 6.2 Skill 文件格式
+### 6.2 三种 Skill 结构模式
 
-目录结构 `skill-name/SKILL.md`，YAML frontmatter + markdown 内容：
+**模式 1：单文件 skill**
+
+```
+network-recon.md          # 纯 markdown，YAML frontmatter + 内容
+```
+
+**模式 2：SKILL.md + 参考文件（类似 CTF skill）**
+
+```
+web-exploit/
+├── SKILL.md              # 主入口，路由中心
+├── sqli-techniques.md    # 深入参考
+├── xss-payloads.md
+├── ssrf-bypass.md
+├── ssti-templates.md
+└── field-notes.md        # 实战笔记
+```
+
+SKILL.md 作为路由中心，包含快速参考表和决策树，指向具体参考文件。LM 只读取需要的部分。
+
+**模式 3：完整 skill 包（脚本 + agent + 资源）**
+
+```
+advanced-recon/
+├── SKILL.md              # 主入口
+├── agents/
+│   ├── port-scanner.md   # 子 agent 定义
+│   └── service-enum.md
+├── scripts/
+│   ├── parse_nmap.py     # 结果解析脚本
+│   └── generate_report.py
+├── references/
+│   └── common-ports.md
+└── assets/
+    └── report-template.html
+```
+
+### 6.3 Skill 文件格式（完整 frontmatter 字段）
 
 ```markdown
 ---
 name: network-recon
 description: 网络侦察与端口扫描方法论
 when_to_use: 当需要对目标进行网络层面的侦察时
+allowed-tools: Bash Read Write Glob Grep Skill Agent
+argument-hint: "<target-ip-or-cidr>"
+arguments:
+  - target
+user-invocable: true
+context: fork          # fork = 子 agent 中执行，默认 inline
+model: inherit         # 模型覆盖
+paths:                 # 条件激活（可选）
+  - "*.nmap"
+  - "**/recon/**"
+hooks:                 # 事件钩子（可选）
+  pre-run: "echo Starting recon..."
 ---
 
 ## 方法论
-1. 存活探测: nmap -sn {target}
-2. 全端口扫描: nmap -sV -sC -p- {target}
 ...
 ```
 
-### 6.3 加载来源（三层）
+### 6.4 加载来源（三层）
 
 | 来源 | 路径 | 说明 |
 |------|------|------|
@@ -159,7 +213,9 @@ when_to_use: 当需要对目标进行网络层面的侦察时
 
 优先级：项目级 > 用户全局 > 内置。同名时高优先级覆盖低优先级。
 
-### 6.4 /skill 命令
+支持安装第三方 skill 包（类似 Claude Code 的 plugin 机制，但简化为本地安装）。
+
+### 6.5 /skill 命令
 
 ```
 /skill list              — 列出所有已加载 skill（内置 + 自定义）
@@ -168,9 +224,10 @@ when_to_use: 当需要对目标进行网络层面的侦察时
 /skill edit <name>       — 编辑已有 skill
 /skill remove <name>     — 删除自定义 skill
 /skill enable/disable    — 启用/禁用某个 skill
+/skill install <path>    — 从本地路径安装 skill 包
 ```
 
-### 6.5 内置渗透 Skill 分类
+### 6.6 内置渗透 Skill 分类
 
 ```
 skills/bundled/
@@ -183,7 +240,7 @@ skills/bundled/
     web-fuzzing/          (ffuf, gobuster, feroxbuster)
     credential-spray/     (hydra, crackmapexec)
   exploit/                # 利用阶段
-    web-vuln/             (sqli, xss, ssti, ssrf)
+    web-vuln/             (sqli, xss, ssti, ssrf + 参考文件)
     known-cve/            (searchsploit, metasploit)
     privesc/              (linpeas, winpeas, sudo abuse)
   post/                   # 后渗透
@@ -192,7 +249,25 @@ skills/bundled/
     data-exfil/           (安全的数据收集方法)
   report/                 # 报告
     session-summary/      (退出时自动整理模板)
+  general/                # 通用能力
+    solve-challenge/      (调度器：识别类型后路由到具体 skill)
 ```
+
+### 6.7 跨 Skill 调用
+
+Skill 之间可以互相调用，形成 DAG 结构：
+
+```
+solve-challenge（调度器）
+  ├── /web-vuln
+  ├── /network-discovery
+  ├── /privesc
+  └── ...
+
+brainstorming → writing-plans（单向流转）
+```
+
+调度器 skill 的 `allowed-tools` 中包含 `Skill`，使其能调用子 skill。
 
 ---
 
