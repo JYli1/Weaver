@@ -49,7 +49,7 @@ export async function query(
     baseURL: config.baseUrl,
   });
 
-  const systemPrompt = buildSystemPrompt(skills);
+  const systemPrompt = buildSystemPrompt(skills, config);
   conversation.messages.push({ role: 'user', content: userInput });
 
   const anthropicTools = tools.map((t) => ({
@@ -130,7 +130,8 @@ export async function query(
           displayToolOutput(output, 8);
         } else {
           if (toolUse.name === 'Write') {
-            displayFileWrite(String(toolUse.input.file_path), output);
+            const lines = output.split('\n');
+            displayFileWrite(String(toolUse.input.file_path), lines.length, lines);
           } else if (toolUse.name === 'Edit') {
             displayToolSuccess(`Edited ${toolUse.input.file_path}`);
           } else if (toolUse.name === 'Read') {

@@ -30,7 +30,7 @@ export async function queryWithCallbacks(
     baseURL: config.baseUrl,
   });
 
-  const systemPrompt = buildSystemPrompt(skills);
+  const systemPrompt = buildSystemPrompt(skills, config);
 
   conversation.messages.push({ role: 'user', content: userInput });
 
