@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { WeaverConfig } from '../types/config';
 import { ToolDefinition, ToolResult } from '../types/tool';
 import { Skill } from '../skills/types';
-import { buildSystemPrompt } from '../constants/systemPrompt';
+import { buildSystemPrompt, buildSkillsReminder } from '../constants/systemPrompt';
 import {
   Spinner,
   displayToolStart,
@@ -50,7 +50,13 @@ export async function query(
   });
 
   const systemPrompt = buildSystemPrompt(skills, config);
-  conversation.messages.push({ role: 'user', content: userInput });
+
+  // 注入 skills listing 作为 <system-reminder>（对标 Claude Code）
+  const skillsReminder = buildSkillsReminder(skills);
+  const userContent = skillsReminder
+    ? `${userInput}\n${skillsReminder}`
+    : userInput;
+  conversation.messages.push({ role: 'user', content: userContent });
 
   const anthropicTools = tools.map((t) => ({
     name: t.name,

@@ -6,12 +6,27 @@ import { findSkill } from '../../skills/loader';
 export function createSkillTool(skills: Skill[]): ToolDefinition {
   return {
     name: 'Skill',
-    description: '调用已加载的 skill。Skill 提供渗透测试方法论、工具使用指南和决策树。',
+    description: `Execute a skill within the main conversation
+
+When users ask you to perform tasks, check if any of the available skills match. Skills provide specialized capabilities and domain knowledge.
+
+When users reference a "slash command" or "/<something>", they are referring to a skill. Use this tool to invoke it.
+
+How to invoke:
+- Set \`skill\` to the exact name of an available skill (no leading slash).
+- Set \`args\` to pass optional arguments.
+
+Important:
+- Available skills are listed in system-reminder messages in the conversation
+- Only invoke a skill that appears in that list
+- When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response about the task
+- NEVER mention a skill without actually calling this tool
+- Do not invoke a skill that is already running`,
     inputSchema: {
       type: 'object',
       properties: {
-        skill: { type: 'string', description: 'skill 名称' },
-        args: { type: 'string', description: '传递给 skill 的参数（可选）' },
+        skill: { type: 'string', description: 'The name of a skill from the available-skills list. Do not guess names.' },
+        args: { type: 'string', description: 'Optional arguments for the skill' },
       },
       required: ['skill'],
     },
