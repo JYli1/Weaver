@@ -10,6 +10,8 @@ Weaver 是一个基于 Claude Code 架构的渗透测试 agent 框架。它是 C
 
 **与 Claude Code 的关系：** 从 Claude Code 源码提取核心模块重组（方案 B: Core Extract），不跟随 Claude Code 后续更新，完全独立维护。
 
+**启动方式：** 和 Claude Code 一样，终端输入 `weaver` 即启动 agent，直接给提示词开始工作。无需额外配置目标范围等前置步骤。
+
 ---
 
 ## 2. 整体架构
@@ -32,7 +34,7 @@ Weaver 是一个基于 Claude Code 架构的渗透测试 agent 框架。它是 C
 │  - BashTool (可配置执行后端)                 │
 │  - AgentTool (spawn 子 agent)                │
 │  - SkillTool (技能调用)                      │
-│  - ScopeGuard (目标范围校验)                 │
+│  - TokenTracker (token/上下文窗口显示)        │
 │  - FileReadTool / FileWriteTool / FileEditTool│
 │  - GlobTool / GrepTool                       │
 │  - WebSearchTool / WebFetchTool              │
@@ -52,7 +54,7 @@ entrypoints/cli.ts → main.ts → init + setup
   → launchRepl() → REPL.tsx
   → 用户输入 → query()
     → Claude API → tool_use → runTools()
-      → ScopeGuard 校验 → BashTool/AgentTool/SkillTool 执行
+      → BashTool/AgentTool/SkillTool 执行
     → tool_result → 下一轮 query
   → 用户退出 → 自动生成报告 → 保存
 ```
@@ -97,40 +99,6 @@ type ExecBackend =
 
 ---
 
-## 4. Scope Guard（范围守卫）
-
-### 4.1 机制
-
-在 BashTool 执行前拦截，从命令中提取 IP/域名，校验是否在授权范围内。
-
-```typescript
-function checkScope(command: string, allowedTargets: ScopeConfig): ScopeResult {
-  const targets = extractTargets(command)  // 正则提取 IP/域名
-  const outOfScope = targets.filter(t => !isInScope(t, allowedTargets))
-  if (outOfScope.length > 0) {
-    return { action: 'confirm', outOfScope, command }
-  }
-  return { action: 'allow' }
-}
-```
-
-### 4.2 行为模式
-
-| 模式 | 行为 |
-|------|------|
-| `confirm` | 弹确认框让用户决定（默认） |
-| `strict` | 直接拒绝 |
-| `off` | 不检查 |
-
-### 4.3 Scope 指定方式
-
-```bash
-weaver --scope "192.168.1.0/24, example.com"
-weaver --scope-file ./targets.txt
-```
-
-也可在 settings.json 中配置 `defaultScope`。
-
 ---
 
 ## 5. 多 Agent 协调
@@ -148,7 +116,6 @@ weaver --scope-file ./targets.txt
 
 ### 5.2 约束
 
-- 子 agent 共享同一个 Scope 配置
 - 各自有独立的 Bash 执行环境
 - 结果汇报回主 agent
 - 主 agent 通过 prompt 描述任务，子 agent 完成后返回结果文本
@@ -321,7 +288,7 @@ skills/bundled/
 ### 9.1 配置文件层级（优先级从高到低）
 
 ```
-命令行参数 (--scope, --backend, --model)
+命令行参数 (--backend, --model)
   ↓
 项目级 .weaver/settings.json
   ↓
@@ -356,10 +323,6 @@ skills/bundled/
     "keyFile": "~/.ssh/id_rsa",       // 私钥路径
     "container": "kali-pentest"       // docker 容器名
   },
-
-  // === 目标范围 ===
-  "defaultScope": [],
-  "scopeEnforcement": "confirm",      // confirm | strict | off
 
   // === 报告 ===
   "reportsDir": "~/.weaver/reports/",
@@ -429,33 +392,42 @@ skills/bundled/
 ### 10.3 状态面板（顶部）
 
 ```
-┌─ 目标 ──────────────────────────────────────┐
-│ 范围: 192.168.1.0/24, example.com           │
+┌─ 状态 ──────────────────────────────────────┐
 │ 后端: ssh://kali@192.168.1.100              │
 │ 阶段: 侦察                                  │
 │ 发现: 3 高危 / 2 中危 / 5 低危              │
+│ Token: 12.5k / 200k (6%)  费用: $0.42       │
 └──────────────────────────────────────────────┘
 ```
 
 ### 10.4 实时状态栏（底部）
 
 ```
-[侦察] ▶ 子任务-1: nmap 扫描中 (42%) │ 子任务-2: subfinder 运行中 │ 发现: 10 │ 已运行 00:15:32
+[侦察] ▶ 子任务-1: nmap 扫描中 (42%) │ 子任务-2: subfinder 运行中 │ 发现: 10 │ 12.5k/200k │ $0.42 │ 00:15:32
 ```
 
 显示内容：
 - 当前阶段
 - 子 agent 状态和正在执行的命令
 - 累计发现数量
+- Token 使用量 / 上下文窗口总量
+- 本次 session 累计费用
 - 运行时长
 
-### 10.5 确认弹窗（中文）
+### 10.5 Token 与上下文窗口显示
+
+实时状态栏中显示 token 消耗和上下文窗口使用情况：
 
 ```
-⚠ 范围外目标检测
-命令涉及范围外目标: 10.0.0.1
-是否继续执行？ [是/否/始终允许]
+Token: 12.5k / 200k (6%) │ 本次费用: $0.42 │ 输入: 8.2k │ 输出: 4.3k
 ```
+
+显示内容：
+- 当前上下文已用 token / 总窗口大小（百分比）
+- 本次 session 累计费用
+- 输入/输出 token 分别统计
+
+当上下文使用超过 80% 时，颜色变为黄色警告；超过 95% 时变为红色。
 
 ### 10.6 退出提示
 
@@ -490,14 +462,14 @@ Weaver 可以读写自己的源码，支持：
 ### 11.3 内置命令
 
 ```
-/status  — 显示当前状态（后端连接、skill 列表、scope、MCP、API）
+/status  — 显示当前状态（后端连接、skill 列表、MCP、API）
 /env     — 检查执行环境（可用工具、网络、权限、环境变量）
-/scope   — 查看/修改当前目标范围
 /report  — 手动触发报告生成
 /skill   — 管理 skill
 /mcp     — 管理 MCP 连接
 /config  — 配置管理
 /compact — context 压缩
+/cost    — 查看本次 session 的 token 消耗统计
 ```
 
 ---
@@ -519,7 +491,6 @@ src/
     BashTool/                 # Bash执行（加backend抽象）
     AgentTool/                # 子agent调度
     SkillTool/                # Skill调用
-    ScopeGuard/               # 目标范围校验（新增）
     FileReadTool/             # 文件读取
     FileWriteTool/            # 文件写入
     FileEditTool/             # 文件编辑
@@ -561,10 +532,10 @@ src/
     skill/                    # /skill 命令
     config/                   # /config 命令
     compact/                  # /compact 命令
-    scope/                    # /scope 命令（新增）
     report/                   # /report 命令（新增）
     status/                   # /status 命令（新增）
     env/                      # /env 命令（新增）
+    cost/                     # /cost 命令（新增）
     mcp/                      # /mcp 命令
 
   utils/
@@ -634,7 +605,27 @@ src/
 
 ---
 
-## 16. 预估规模
+## 16. 实现参考原则
+
+Weaver 的实现完全参考 Claude Code 源码，遵循以下流程：
+
+1. **先看分析文档** — 位于 `D:\github_project\claude-code-main\claude-code-analysis-main\analysis\`，包含架构概览、工具实现、skill 机制、多 agent 等详细分析
+2. **需要时再看源码** — 位于 `D:\github_project\claude-code-main\src\`，当分析文档不够详细或需要确认具体实现细节时，直接阅读源码
+3. **提取而非 fork** — 不是直接复制粘贴，而是理解原理后在 Weaver 项目中重新实现，保持代码干净可控
+4. **保持一致性** — 对于复用的模块（API 层、工具调度、skill 机制等），尽量保持与 Claude Code 相同的接口和行为，降低理解成本
+
+**参考优先级：**
+```
+分析文档（快速理解架构和设计意图）
+  ↓
+源码（确认具体实现细节）
+  ↓
+重新实现（在 Weaver 中干净地实现）
+```
+
+---
+
+## 17. 预估规模
 
 - 文件数：~150-200
 - 代码行数：~3-5万行
