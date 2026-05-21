@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weaver-py"
+version = "0.1.0"
+description = "Python runtime for the Weaver pentest agent"
+requires-python = ">=3.11"
+dependencies = [
+  "anthropic>=0.60.0",
+  "httpx>=0.25.0",
+  "rich>=13.7.0",
+  "textual>=0.89.0",
+]
+
+[project.scripts]
+weaver-py = "weaver_py.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["weaver_py*"]

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "local_echo": {
+      "command": "python",
+      "args": [".weaver/mcp/minimal_mcp_server.py"],
+      "env": {}
+    }
+  }
+}

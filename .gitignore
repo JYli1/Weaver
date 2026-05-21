@@ -1,5 +1,11 @@
-node_modules/
-dist/
-*.tsbuildinfo
 .env
-bun.lock
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local Weaver runtime state
+.weaver/settings.json
+.weaver/audit/
+.weaver/reports/
