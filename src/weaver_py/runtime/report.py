@@ -36,6 +36,10 @@ def generate_session_report(session: Any, ended_at: datetime, reason: str) -> st
         f"- Backend: `{session.config.backend.type}`",
         f"- Tokens: input={session.input_tokens}, output={session.output_tokens}, total={session.input_tokens + session.output_tokens}",
         f"- Phase: `{session.current_phase}` confidence={session.phase_confidence:.2f}",
+        f"- Mode: `{session.security.mode}`",
+        f"- Target: {session.security.target or '-'}",
+        f"- Evidence: {session.evidence.count}",
+        f"- Next action: {session.security.next_action or '-'}",
         f"- Current task: {session.current_task or '-'}",
         f"- Phase reason: {session.phase_reason or '-'}",
         "",
@@ -66,6 +70,14 @@ def generate_session_report(session: Any, ended_at: datetime, reason: str) -> st
                 lines.append(f"- {event.get('type')} `{name}` exit={event.get('exit_code')} {output}")
     else:
         lines.append("- No tool events recorded.")
+    lines.extend(
+        [
+            "",
+            "## Evidence",
+            "",
+        ]
+    )
+    lines.extend(session.evidence.render_lines())
     lines.extend(
         [
             "",

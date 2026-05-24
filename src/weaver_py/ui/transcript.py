@@ -9,10 +9,9 @@ from rich.markup import escape
 from weaver_py.agent.events import AgentEvent
 from weaver_py.tui.theme import PALETTE
 
-PENDING_CIRCLE = "○"
-SUCCESS_CIRCLE = "●"
-FAILURE_CIRCLE = "●"
-RESULT_PREFIX = "  ⎿ "
+# 左边框标记 — 形成"操作日志流"的视觉效果
+BORDER_CHAR = "┃"
+BORDER_CHAR_ASCII = "|"
 
 
 @dataclass
@@ -24,13 +23,22 @@ class ToolCallView:
 class TranscriptRenderer:
     def __init__(self, unicode: bool = True) -> None:
         self._tool_calls: dict[str, ToolCallView] = {}
-        self.pending_circle = PENDING_CIRCLE if unicode else "*"
-        self.success_circle = SUCCESS_CIRCLE if unicode else "*"
-        self.failure_circle = FAILURE_CIRCLE if unicode else "*"
-        self.result_prefix = RESULT_PREFIX if unicode else "  | "
-        self.success = "✓" if unicode else "OK"
-        self.failure = "✗" if unicode else "ERR"
+        self._seq: int = 0
+        self._unicode = unicode
+        self.border = BORDER_CHAR if unicode else BORDER_CHAR_ASCII
+        self.check = "✓" if unicode else "OK"
+        self.cross = "✗" if unicode else "ERR"
         self.ellipsis = "…" if unicode else "..."
+
+    def reset(self) -> None:
+        self._seq = 0
+        self._tool_calls.clear()
+
+    def _border(self) -> str:
+        return f"[{PALETTE['accent_dim']}]  {self.border}[/{PALETTE['accent_dim']}]"
+
+    def _seq_label(self) -> str:
+        return f"[{PALETTE['muted']}]{self._seq:02d}[/{PALETTE['muted']}]"
 
     def render_event(self, event: AgentEvent) -> list[str]:
         if event.type in {"tool_start", "tool_result", "tool_error"} and event.data.get("name") == "UpdatePhase":
@@ -43,11 +51,11 @@ class TranscriptRenderer:
             phase = str(event.data.get("phase") or "general")
             task = str(event.data.get("current_task") or "")
             suffix = f" · {escape(task)}" if task else ""
-            return [f"[{PALETTE['muted']}]{self.result_prefix}阶段：[/{PALETTE['muted']}][{PALETTE['accent_2']}]{escape(phase)}[/{PALETTE['accent_2']}][{PALETTE['muted']}]{suffix}[/{PALETTE['muted']}]"]
+            return [f"{self._border()} [{PALETTE['muted']}]阶段：{escape(phase)}{suffix}[/{PALETTE['muted']}]"]
         if event.type == "context_warning":
-            return [f"[{PALETTE['muted']}]{self.result_prefix}上下文：{escape(str(event.data.get('level') or ''))}[/{PALETTE['muted']}]"]
+            return [f"{self._border()} [{PALETTE['muted']}]上下文：{escape(str(event.data.get('level') or ''))}[/{PALETTE['muted']}]"]
         if event.type == "progress_saved":
-            return [f"[{PALETTE['muted']}]{self.result_prefix}进度已保存：{escape(str(event.data.get('path') or ''))}[/{PALETTE['muted']}]"]
+            return [f"{self._border()} [{PALETTE['muted']}]进度已保存：{escape(str(event.data.get('path') or ''))}[/{PALETTE['muted']}]"]
         return []
 
     def _render_tool_start(self, event: AgentEvent) -> list[str]:
@@ -56,8 +64,9 @@ class TranscriptRenderer:
         raw_input = event.data.get("input")
         tool_input = raw_input if isinstance(raw_input, dict) else {}
         self._tool_calls[tool_id] = ToolCallView(name=name, input=tool_input)
+        self._seq += 1
         title = self._tool_title(name, tool_input)
-        return [f"[{PALETTE['muted']}]{self.pending_circle}[/{PALETTE['muted']}] [{PALETTE['text']}]{escape(title)}[/{PALETTE['text']}]"]
+        return [f"{self._border()} {self._seq_label()}  [{PALETTE['text']}]{escape(title)}[/{PALETTE['text']}]"]
 
     def _render_tool_result(self, event: AgentEvent, is_error: bool) -> list[str]:
         tool_id = str(event.data.get("id") or event.data.get("name") or "tool")
@@ -69,14 +78,14 @@ class TranscriptRenderer:
         title = self._tool_title(call.name, call.input)
         if failed:
             first = self._first_line(output) or f"exit={exit_code}"
-            summary = f"{title} · Error: {first}"
-            summary_markup = f"[{PALETTE['error']}]{self.failure_circle}[/{PALETTE['error']}] [{PALETTE['text']}]{escape(summary)}[/{PALETTE['text']}]"
+            summary = f"{title}  [{PALETTE['error']}]{self.cross}[/{PALETTE['error']}] [{PALETTE['muted']}]Error: {escape(first)}[/{PALETTE['muted']}]"
         else:
-            summary = f"{title} · {self._summarize_result(call.name, call.input, output, exit_code)}"
-            summary_markup = f"[{PALETTE['success']}]{self.success_circle}[/{PALETTE['success']}] [{PALETTE['text']}]{escape(summary)}[/{PALETTE['text']}]"
-        lines = [summary_markup]
+            result_text = self._summarize_result(call.name, call.input, output, exit_code)
+            summary = f"{title}  [{PALETTE['success']}]{self.check}[/{PALETTE['success']}] [{PALETTE['muted']}]{escape(result_text)}[/{PALETTE['muted']}]"
+        lines = [f"{self._border()} {self._seq_label()}  [{PALETTE['text']}]{summary}[/{PALETTE['text']}]"]
         if self._should_preview(call.name, output, failed):
-            lines.extend(f"      [{PALETTE['muted']}]{escape(line)}[/{PALETTE['muted']}]" for line in self._preview_lines(output))
+            for preview_line in self._preview_lines(output):
+                lines.append(f"{self._border()}      [{PALETTE['muted']}]{escape(preview_line)}[/{PALETTE['muted']}]")
         return lines
 
     def _tool_title(self, name: str, tool_input: dict[str, Any]) -> str:
@@ -89,6 +98,8 @@ class TranscriptRenderer:
             return f"{name}({self._short_path(str(tool_input.get('file_path') or ''))})"
         if name == "Bash":
             return f"Bash({self._shorten(str(tool_input.get('command') or ''), 80)})"
+        if name == "PowerShell":
+            return f"PowerShell({self._shorten(str(tool_input.get('command') or ''), 80)})"
         if name == "Glob":
             return f"Glob({tool_input.get('pattern') or '*'})"
         if name == "Grep":
@@ -125,6 +136,8 @@ class TranscriptRenderer:
             return f"Found {self._non_empty_line_count(output)} matches"
         if name == "Bash":
             return f"exit={exit_code}, {self._line_count(output)} lines"
+        if name == "PowerShell":
+            return f"exit={exit_code}, {self._line_count(output)} lines"
         if name == "UpdatePhase":
             try:
                 data = json.loads(output)
@@ -160,7 +173,7 @@ class TranscriptRenderer:
     def _should_preview(self, name: str, output: str, failed: bool) -> bool:
         if not output.strip():
             return False
-        return failed or name in {"Read", "Glob", "Grep", "Bash", "Skill"} or self._mcp_title(name) is not None
+        return failed or name in {"Read", "Glob", "Grep", "Bash", "PowerShell", "Skill"} or self._mcp_title(name) is not None
 
     def _preview_lines(self, text: str, max_lines: int = 4, max_chars: int = 520) -> list[str]:
         lines: list[str] = []

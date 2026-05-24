@@ -21,11 +21,13 @@ def runtime_env() -> dict[str, str]:
     env["PYTHONPATH"] = str(SRC) if not current else str(SRC) + os.pathsep + current
     return env
 
+
 from weaver_py.agent import AgentEngine
 from weaver_py.agent.events import AgentEvent
 from weaver_py.config import McpServerConfig, WeaverConfig, load_config
 from weaver_py.runtime import WeaverSession, build_default_registry, handle_command
-from weaver_py.ui import TranscriptRenderer
+from weaver_py.security import EvidenceStore, SecurityContext, build_writeup
+from weaver_py.ui import BannerContext, TranscriptRenderer, render_banner
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -34,6 +36,161 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"[{status}] {name}{suffix}")
     if not ok:
         raise SystemExit(1)
+
+
+def run_banner_smoke() -> None:
+    config = WeaverConfig(api_key="test-key", model="banner-model")
+    context = BannerContext(target="http://banner.local", phase="enum", evidence_count=2)
+    unicode_banner = render_banner(config, ROOT, unicode=True, width=96, context=context)
+    unicode_ok = all(
+        token in unicode_banner
+        for token in ("WEAVER", "FIELD OPS", "banner-model", "/target", "http://banner.local", "enum", "2")
+    )
+    check("unicode field ops banner", unicode_ok)
+
+    ascii_banner = render_banner(config, ROOT, unicode=False, width=96, context=context)
+    ascii_ok = all(token in ascii_banner for token in ("WEAVER", "FIELD OPS", "banner-model", "/target"))
+    ascii_ok = ascii_ok and all(ch in ascii_banner for ch in ("+", "-", "|"))
+    ascii_ok = ascii_ok and all(ord(ch) < 128 for ch in ascii_banner)
+    check("ascii field ops banner", ascii_ok)
+
+    narrow_banner = render_banner(config, ROOT, unicode=True, width=72, context=context)
+    narrow_ok = "FIELD OPS" in narrow_banner and "banner-model" in narrow_banner and len(narrow_banner.splitlines()) >= 8
+    check("narrow field ops banner", narrow_ok)
+
+    escaped_config = WeaverConfig(api_key="test-key", model="model[demo]&x")
+    escaped_context = BannerContext(target="http://banner.local/[x]&y", phase="枚举", evidence_count=12)
+    escaped_banner = render_banner(escaped_config, ROOT / "[demo]&root", unicode=True, width=96, context=escaped_context)
+    escaped_ok = "\\[demo]" in escaped_banner and "\\[x]" in escaped_banner and "[/target" not in escaped_banner
+    check("escaped field ops banner", escaped_ok)
+
+
+def run_retro_cli_palette() -> None:
+    import re
+
+    from weaver_py.tui.theme import PALETTE
+
+    required = ["amber", "orange", "line_dim", "user_bg", "user_border", "accent_dim"]
+    hex_color = re.compile(r"^#[0-9A-Fa-f]{6}$")
+    missing = [name for name in required if name not in PALETTE]
+    invalid = [
+        f"{name}={PALETTE[name]!r}"
+        for name in required
+        if name in PALETTE and (not isinstance(PALETTE[name], str) or not hex_color.fullmatch(PALETTE[name]))
+    ]
+    detail = "; ".join(
+        part
+        for part in (
+            f"missing: {', '.join(missing)}" if missing else "",
+            f"invalid: {', '.join(invalid)}" if invalid else "",
+        )
+        if part
+    )
+    check("retro cli palette", not missing and not invalid, detail)
+
+
+def run_retro_banner_smoke() -> None:
+    from rich.cells import cell_len
+    from rich.text import Text
+
+    from weaver_py.tui.theme import PALETTE
+
+    config = WeaverConfig(api_key="test-key", model="retro-model")
+    unicode_config = WeaverConfig(api_key="test-key", model="复古模型")
+    unicode_root = Path("D:/实验/项目/Weaver安全实验室")
+    banner = render_banner(config, ROOT, unicode=True, width=110)
+    unicode_banner = render_banner(unicode_config, unicode_root, unicode=True, width=72)
+    ascii_banner = render_banner(config, ROOT, unicode=False, width=80)
+
+    def plain_lines(value: str) -> list[str]:
+        return [Text.from_markup(line).plain for line in value.splitlines()]
+
+    unicode_widths_ok = all(cell_len(line) == 72 for line in plain_lines(unicode_banner))
+    ascii_widths_ok = all(cell_len(line) == 80 for line in plain_lines(ascii_banner))
+
+    ok = "WEAVER" in banner
+    ok = ok and "FIELD OPS" in banner
+    ok = ok and "retro-model" in banner
+    ok = ok and "╭" in banner and "╰" in banner
+    ok = ok and "█" in banner
+    ok = ok and f"[{PALETTE['amber']}]" in banner and f"[{PALETTE['cyan']}]" in banner
+    ok = ok and all(command in banner for command in ("/help", "/status", "/target", "/evidence", "/exit"))
+    ok = ok and "WEAVER" in ascii_banner and "+" in ascii_banner
+    ok = ok and unicode_widths_ok and ascii_widths_ok
+    check("retro startup banner", ok)
+
+
+def run_retro_cli_render_helpers() -> None:
+    from rich.cells import cell_len
+    from rich.markup import escape as markup_escape
+
+    from weaver_py.cli import _bottom_status_markup, _input_rule, _render_user_prompt_block
+
+    prompt_lines = _render_user_prompt_block("你好", True, width=48)
+    block = "\n".join(prompt_lines)
+    status = _bottom_status_markup("general", "http://example.local/very/long/path", 2, 1200, 345)
+    long_cjk_lines = _render_user_prompt_block("你好世界" * 12, True, width=32)
+    status_markup = _bottom_status_markup("gen[red]", "http://example.local/[red]x[/red]", 1, 1, 1)
+
+    ok = "you" not in block.lower()
+    ok = ok and "❯ 你好" in block
+    ok = ok and "╭" in block and "╰" in block
+    ok = ok and "ctx" in status and "phase general" in status and "ev 2" in status
+    ok = ok and "target http://example.local" in status
+    ok = ok and len(_input_rule(True, width=20)) == 20
+    ok = ok and all(cell_len(line) == 48 for line in prompt_lines)
+    ok = ok and all(cell_len(line) == 32 for line in long_cjk_lines)
+    ok = ok and markup_escape("gen[red]") in status_markup
+    ok = ok and markup_escape("http://example.local/[red]x[/red]") in status_markup
+    check("retro cli render helpers", ok)
+
+
+def run_shell_registry_order() -> None:
+    registry = build_default_registry(ROOT)
+    names = [schema["name"] for schema in registry.schemas()]
+    if sys.platform == "win32":
+        ok = "PowerShell" in names and "Bash" in names and names.index("PowerShell") < names.index("Bash")
+        check("shell registry order", ok)
+    else:
+        check("shell registry order", "Bash" in names and "PowerShell" not in names)
+
+
+def run_shell_tool_descriptions() -> None:
+    registry = build_default_registry(ROOT)
+    descriptions = {schema["name"]: str(schema["description"]) for schema in registry.schemas()}
+    if sys.platform == "win32":
+        ok = "PowerShell" in descriptions and "Prefer this tool on Windows" in descriptions["PowerShell"]
+        ok = ok and "Windows" in descriptions["Bash"]
+        check("shell tool descriptions", ok)
+    else:
+        check("shell tool descriptions", "Bash" in descriptions)
+
+
+def run_system_prompt_output_rules() -> None:
+    from weaver_py.agent.engine import BASE_SYSTEM_PROMPT, build_system_prompt
+
+    built = build_system_prompt(project_context="项目规则示例")
+    requirements = [
+        ("identity section", "## 身份与定位" in BASE_SYSTEM_PROMPT),
+        ("authorization scope section", "## 授权、scope 与影响确认" in BASE_SYSTEM_PROMPT),
+        ("evidence writeup section", "## Evidence 与 writeup 闭环" in BASE_SYSTEM_PROMPT),
+        ("phase bookkeeping instruction", "Do not output phase bookkeeping" in BASE_SYSTEM_PROMPT),
+        ("update phase tool instruction", "UpdatePhase tool only" in BASE_SYSTEM_PROMPT),
+        ("evidence persistence warning", "不要承诺 runtime 会自动保存所有 evidence" in BASE_SYSTEM_PROMPT),
+        ("legacy destructive action wording removed", "Do not perform destructive actions" not in BASE_SYSTEM_PROMPT),
+        ("project context heading", "## 项目上下文（来自 CLAUDE.md）" in built),
+        ("project context content", "项目规则示例" in built),
+    ]
+    failures = [name for name, passed in requirements if not passed]
+    check("system prompt uses Chinese confirmation-first sections", not failures, ", ".join(failures))
+
+
+def run_cli_failure_status_text() -> None:
+    from weaver_py.cli import _failure_markup
+
+    rendered = _failure_markup("00:08")
+    ok = "失败" in rendered and "完成" not in rendered
+    check("cli failure status text", ok)
 
 
 def run_cli_help() -> None:
@@ -55,16 +212,37 @@ def run_cli_exit() -> None:
         [sys.executable, "-m", "weaver_py.cli", "--cwd", str(ROOT)],
         cwd=ROOT,
         env=runtime_env(),
-        input="/exit\n",
+        input="﻿/exit\n",
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         check=False,
     )
+    raw_prompt_lines = [line for line in result.stdout.splitlines() if line.strip() == "❯"]
     ok = result.returncode == 0 and "Weaver" in result.stdout and "再见" in result.stdout
+    ok = ok and "ctx" in result.stdout and "phase general" in result.stdout
+    ok = ok and "❯ /exit" in result.stdout and not raw_prompt_lines
     ok = ok and "工具开始" not in result.stdout and "工具完成" not in result.stdout
     check("cli-first default exit", ok)
+
+
+def run_cli_lab_status() -> None:
+    from weaver_py.cli import _status_markup
+
+    rendered = _status_markup(
+        "正在思考",
+        None,
+        "enum",
+        "检查后台路径",
+        1200,
+        300,
+        "·",
+        "http://web-lab.local/admin/login",
+        2,
+    )
+    ok = "▍" in rendered and "enum" in rendered and "ev:2" in rendered and "target http://web-lab.local/admin" in rendered
+    check("cli lab status line", ok)
 
 
 def run_transcript_renderer() -> None:
@@ -104,20 +282,149 @@ def run_transcript_renderer() -> None:
     )
     mcp_start = renderer.render_event(AgentEvent(type="tool_start", data={"id": "mcp-1", "name": "mcp__demo__echo", "input": {"text": "hello"}}))
     mcp_done = renderer.render_event(AgentEvent(type="tool_result", data={"id": "mcp-1", "name": "mcp__demo__echo", "exit_code": 0, "output": "echo:hello"}))
-    rendered = "\n".join(write_start + write_done + edit_start + edit_done + bash_start + bash_error + read_start + read_done + skill_start + skill_done + mcp_start + mcp_done)
-    ok = "○" in rendered and "●" in rendered and "Write(" in rendered and "Edit(" in rendered and "Bash(" in rendered
-    ok = ok and "Error:" in rendered and "line one" in rendered
+    powershell_start = renderer.render_event(
+        AgentEvent(type="tool_start", data={"id": "ps-1", "name": "PowerShell", "input": {"command": "Write-Output hello"}})
+    )
+    powershell_done = renderer.render_event(
+        AgentEvent(type="tool_result", data={"id": "ps-1", "name": "PowerShell", "exit_code": 0, "output": "hello"})
+    )
+    rendered = "\n".join(
+        write_start
+        + write_done
+        + edit_start
+        + edit_done
+        + bash_start
+        + bash_error
+        + read_start
+        + read_done
+        + skill_start
+        + skill_done
+        + mcp_start
+        + mcp_done
+        + powershell_start
+        + powershell_done
+    )
+    ok = "┃" in rendered and "Write(" in rendered and "Edit(" in rendered and "Bash(" in rendered
+    ok = ok and "✗" in rendered and "Error:" in rendered and "line one" in rendered
     ok = ok and "Skill(demo)" in rendered and "Loaded skill: demo · project" in rendered and "Base: D:/demo/.weaver/skills/demo" in rendered
     ok = ok and "MCP demo.echo" in rendered and "MCP demo.echo returned" in rendered
-    check("claude-like transcript renderer", ok)
+    ok = ok and "PowerShell(" in rendered
+    check("transcript renderer", ok)
+
+
+def run_security_state() -> None:
+    context = SecurityContext()
+    check("security default mode", context.mode == "ctf_lab" and context.phase == "general")
+    context.set_target("http://web-lab.local")
+    context.update_phase("enum", 0.87, "发现 Web 目录枚举线索", "检查 /admin")
+    context.set_next_action("检查 /admin 的认证逻辑")
+    check(
+        "security context update",
+        context.target == "http://web-lab.local"
+        and context.phase == "enum"
+        and context.phase_confidence == 0.87
+        and context.next_action == "检查 /admin 的认证逻辑",
+    )
+    evidence = EvidenceStore()
+    note = evidence.add_note("登录页返回 debug header", phase=context.phase)
+    finding = evidence.add(kind="finding", title="/admin exposed", source="Bash(ffuf)", summary="目录枚举发现 /admin", phase=context.phase)
+    rendered = "\n".join(evidence.render_lines())
+    check(
+        "evidence store",
+        evidence.count == 2
+        and note.kind == "note"
+        and finding.title == "/admin exposed"
+        and "登录页返回 debug header" in rendered
+        and "/admin exposed" in rendered,
+    )
+    writeup = build_writeup(context, evidence)
+    writeup_ok = "# Challenge" in writeup and "# Evidence" in writeup and "http://web-lab.local" in writeup and "/admin exposed" in writeup
+    check("ctf writeup builder", writeup_ok)
+
+    session = WeaverSession(ROOT)
+    session.security.set_target("http://session-target.local")
+    session.evidence.add_note("session note", phase="enum")
+    session.update_from_event(
+        AgentEvent(
+            type="phase_update",
+            data={"phase": "enum", "confidence": 0.9, "reason": "目录枚举", "current_task": "检查后台路径"},
+        )
+    )
+    status = session.status_plain()
+    session_ok = "target=http://session-target.local" in status and "evidence=1" in status and session.security.phase == "enum"
+    check("session security state", session_ok)
+
+    session.update_from_event(
+        AgentEvent(
+            type="phase_update",
+            data={"phase": "invalid-phase", "confidence": 3.0, "reason": "异常 phase", "current_task": "异常任务"},
+        )
+    )
+    normalized_ok = (
+        session.current_phase == "general"
+        and session.security.phase == "general"
+        and session.phase_confidence == 1.0
+        and session.security.phase_confidence == 1.0
+    )
+    check("session security normalized phase", normalized_ok)
+
+    session.clear()
+    clear_ok = session.security.target == "" and session.evidence.count == 0 and session.security.phase == "general"
+    check("session security clear", clear_ok)
+
+    command_session = WeaverSession(ROOT)
+    target_result = handle_command(command_session, "/target http://cmd-target.local")
+    note_result = handle_command(command_session, "/note 发现 /admin")
+    evidence_result = handle_command(command_session, "/evidence")
+    writeup_result = handle_command(command_session, "/writeup")
+    command_ok = (
+        target_result.handled
+        and "Target 已设置" in target_result.message
+        and command_session.security.target == "http://cmd-target.local"
+        and note_result.handled
+        and command_session.evidence.count == 1
+        and evidence_result.handled
+        and "/admin" in evidence_result.message
+        and writeup_result.handled
+        and "# Challenge" in writeup_result.message
+    )
+    check("ctf lab commands", command_ok)
+
+    upper_target = handle_command(command_session, "/TARGET http://upper-target.local")
+    upper_note = handle_command(command_session, "/NOTE 大写命令 note")
+    empty_target = handle_command(command_session, "/target")
+    before_empty_note_count = command_session.evidence.count
+    empty_note = handle_command(command_session, "/note")
+    command_edge_ok = (
+        upper_target.handled
+        and command_session.security.target == "http://upper-target.local"
+        and upper_note.handled
+        and command_session.evidence.items[-1].title == "大写命令 note"
+        and empty_target.handled
+        and empty_target.is_error
+        and command_session.security.target == "http://upper-target.local"
+        and empty_note.handled
+        and empty_note.is_error
+        and command_session.evidence.count == before_empty_note_count
+    )
+    check("ctf lab command edges", command_edge_ok)
 
 
 async def run_report_command() -> None:
     session = WeaverSession(ROOT)
+    session.security.set_target("http://report-target.local")
+    session.evidence.add(kind="finding", title="report evidence", source="manual", summary="报告 smoke 证据", phase="enum")
     session.conversation.add_user_text("report smoke user")
     session.conversation.add_assistant_blocks([{"type": "text", "text": "report smoke assistant"}])
     result = handle_command(session, "/report")
-    ok = result.report_path is not None and result.report_path.exists() and "Weaver Session Report" in result.report_path.read_text(encoding="utf-8")
+    report_text = result.report_path.read_text(encoding="utf-8") if result.report_path else ""
+    ok = (
+        result.report_path is not None
+        and result.report_path.exists()
+        and "Weaver Session Report" in report_text
+        and "http://report-target.local" in report_text
+        and "report evidence" in report_text
+    )
     check("session report command", ok)
 
     exit_session = WeaverSession(ROOT)
@@ -150,6 +457,13 @@ async def run_tools() -> None:
 
     bash_result = await registry.execute("Bash", {"command": f"{sys.executable} --version"})
     check("bash tool", bash_result.exit_code == 0 and "Python" in bash_result.output)
+
+    if sys.platform == "win32":
+        format_table_result = await registry.execute(
+            "PowerShell",
+            {"command": "Get-Date | Format-Table -AutoSize"},
+        )
+        check("powershell format-table allowed", format_table_result.exit_code == 0)
 
     denied_result = await registry.execute("Bash", {"command": "rm -rf /"})
     check("bash safety deny", denied_result.is_error and "Command denied" in denied_result.output)
@@ -323,6 +637,160 @@ async def run_tui() -> None:
         app._run_started_at = None
 
 
+def run_openai_chunk_merge() -> None:
+    config = WeaverConfig(api_key="test-key", model="gpt-test", base_url="http://example.invalid")
+    engine = AgentEngine(config, build_default_registry(ROOT), root=ROOT, max_tokens=128)
+    merged = engine._merge_chat_chunks(
+        [
+            {"choices": [{"delta": {"content": "准备调用工具：", "tool_calls": [{"index": 0, "function": {"name": "Re", "arguments": "{\"file_"}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "ad", "arguments": "path\":\"README.md\"}"}}]}, "finish_reason": "tool_calls"}]},
+            {"usage": {"prompt_tokens": 11, "completion_tokens": 7}, "choices": []},
+        ]
+    )
+    message = merged["choices"][0]["message"]
+    tool_call = message["tool_calls"][0]
+    ok = (
+        message["content"] == "准备调用工具："
+        and tool_call["id"] == "call_0"
+        and tool_call["type"] == "function"
+        and tool_call["function"]["name"] == "Read"
+        and tool_call["function"]["arguments"] == "{\"file_path\":\"README.md\"}"
+        and merged["usage"]["prompt_tokens"] == 11
+    )
+    check("openai chunk tool_calls merge", ok)
+
+
+async def run_openai_final_content_fallback() -> None:
+    events: list[tuple[str, str]] = []
+
+    async def on_event(event: AgentEvent) -> None:
+        if event.type in {"text", "text_delta", "done"}:
+            events.append((event.type, str(event.data.get("text") or event.data.get("stop_reason") or "")))
+
+    config = WeaverConfig(api_key="test-key", model="gpt-test", base_url="http://example.invalid")
+    engine = AgentEngine(config, build_default_registry(ROOT), event_handler=on_event, root=ROOT, max_tokens=128)
+
+    async def fake_stream(_: dict[str, object]) -> dict[str, object]:
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "你好，fallback 生效", "tool_calls": []}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            "_streamed_text": "",
+        }
+
+    engine._stream_chat_completion = fake_stream  # type: ignore[method-assign]
+    result = await engine.ask("你好")
+    ok = result == "你好，fallback 生效" and ("text", "你好，fallback 生效") in events and any(kind == "done" for kind, _ in events)
+    check("openai final content fallback", ok)
+
+
+async def run_chat_usage_fallback() -> None:
+    config = WeaverConfig(api_key="test-key", base_url="http://example.local", model="gpt-test")
+    registry = build_default_registry(ROOT)
+    events: list[AgentEvent] = []
+    payload_seen: dict[str, object] = {}
+
+    async def on_event(event: AgentEvent) -> None:
+        events.append(event)
+
+    engine = AgentEngine(config, registry, event_handler=on_event, root=ROOT, max_tokens=64)
+
+    async def fake_stream(payload: dict[str, object]) -> dict[str, object]:
+        payload_seen.update(payload)
+        return {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "fallback usage ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {},
+            "_streamed_text": "",
+        }
+
+    engine._stream_chat_completion = fake_stream  # type: ignore[method-assign]
+    response = await engine.ask("hello fallback tokens")
+    token_events = [event for event in events if event.type == "token_update"]
+    stream_options = payload_seen.get("stream_options")
+    ok = response == "fallback usage ok"
+    ok = ok and isinstance(stream_options, dict) and stream_options.get("include_usage") is True
+    ok = ok and bool(token_events)
+    ok = ok and int(token_events[-1].data.get("input_tokens") or 0) > 0
+    ok = ok and int(token_events[-1].data.get("output_tokens") or 0) > 0
+    check("chat usage fallback", ok)
+
+
+async def run_reasoning_content_replay() -> None:
+    captured_payloads: list[dict[str, object]] = []
+
+    config = WeaverConfig(api_key="test-key", model="gpt-test", base_url="http://example.invalid")
+    engine = AgentEngine(config, build_default_registry(ROOT), root=ROOT, max_tokens=128)
+    calls = {"count": 0}
+
+    async def fake_stream(payload: dict[str, object]) -> dict[str, object]:
+        captured_payloads.append(payload)
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call_0",
+                            "type": "function",
+                            "function": {"name": "Read", "arguments": "{\"file_path\":\"README.md\"}"},
+                        }],
+                        "reasoning_content": "first-pass reasoning",
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 6},
+                "_streamed_text": "",
+            }
+        replayed = captured_payloads[-1]["messages"]
+        assistant_messages = [item for item in replayed if isinstance(item, dict) and item.get("role") == "assistant"]
+        replay_ok = bool(assistant_messages) and assistant_messages[-1].get("reasoning_content") == "first-pass reasoning"
+        content = "reasoning replay ok" if replay_ok else "reasoning replay missing"
+        return {
+            "choices": [{"message": {"role": "assistant", "content": content, "tool_calls": []}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 13, "completion_tokens": 4},
+            "_streamed_text": "",
+        }
+
+    engine._stream_chat_completion = fake_stream  # type: ignore[method-assign]
+    result = await engine.ask("读取 README")
+    check("reasoning content replay", result == "reasoning replay ok")
+
+    events: list[tuple[str, str]] = []
+
+    async def on_event(event: AgentEvent) -> None:
+        if event.type in {"text", "done"}:
+            events.append((event.type, str(event.data.get("text") or event.data.get("stop_reason") or "")))
+
+    config = WeaverConfig(api_key="test-key", model="gpt-test", base_url="http://example.invalid")
+    engine = AgentEngine(config, build_default_registry(ROOT), event_handler=on_event, root=ROOT, max_tokens=128)
+    calls = {"count": 0}
+
+    async def fake_stream(_: dict[str, object]) -> dict[str, object]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": []}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+                "_streamed_text": "",
+            }
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "已完成。", "tool_calls": []}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 2},
+            "_streamed_text": "",
+        }
+
+    engine._stream_chat_completion = fake_stream  # type: ignore[method-assign]
+    result = await engine.ask("执行命令")
+    ok = calls["count"] == 2 and result == "已完成。" and ("text", "已完成。") in events
+    check("openai empty stop retry", ok)
+
+
 async def run_gateway() -> None:
     config = load_config(ROOT)
     registry = build_default_registry(ROOT)
@@ -345,12 +813,26 @@ async def main() -> None:
     parser.add_argument("--tui", action="store_true", help="Initialize the Textual TUI in test mode")
     args = parser.parse_args()
 
+    run_banner_smoke()
+    run_retro_cli_palette()
+    run_retro_banner_smoke()
+    run_retro_cli_render_helpers()
+    run_system_prompt_output_rules()
+    run_cli_failure_status_text()
+    run_shell_registry_order()
+    run_shell_tool_descriptions()
     run_cli_help()
     run_cli_exit()
+    run_cli_lab_status()
     run_transcript_renderer()
+    run_security_state()
     await run_report_command()
     await run_tools()
     await run_capabilities()
+    run_openai_chunk_merge()
+    await run_openai_final_content_fallback()
+    await run_chat_usage_fallback()
+    await run_reasoning_content_replay()
     if args.tui:
         await run_tui()
     if args.gateway:

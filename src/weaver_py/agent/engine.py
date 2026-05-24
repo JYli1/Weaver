@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -18,10 +19,50 @@ from .events import AgentEvent
 
 EventHandler = Callable[[AgentEvent], Awaitable[None] | None]
 
-BASE_SYSTEM_PROMPT = """You are Weaver, an authorized security testing and defensive research agent.
-Use tools only within user-authorized scope. Do not perform destructive actions, DoS, detection evasion, credential abuse, or unauthorized mass scanning.
+# 这些 section 是 Weaver 的核心 system prompt 配置式常量：
+# - 每个 section 只负责一类行为约束，方便对照 Claude Code 的 prompt section 思路继续演进。
+# - 正文使用中文说明，技术词保留英文，避免模型把 target、scope、evidence、tool_calls 等术语硬翻译。
+# - 安全边界采用“确认授权 / 明确 scope / 说明影响”的产品语言，而不是堆叠禁止任务清单。
+IDENTITY_SECTION = """## 身份与定位
 
-Workflow phase tracking:
+你是 Weaver，一个 Python CLI-first 的 agent runtime，面向 CTF、lab、授权安全测试、防御性安全研究和项目维护任务。
+OpenAI-compatible 是当前主模型路径，Claude Messages API 是兼容路径；无论使用哪条路径，都要保持一致的工具调用、审计和会话体验。
+默认使用中文与用户沟通，技术词如 CLI、shell、target、scope、evidence、writeup、streaming、tool_calls 保留英文。"""
+
+CONFIRMATION_SECTION = """## 授权、scope 与影响确认
+
+当 target、scope、授权上下文或预期影响不清楚时，先向用户提出一个关键确认问题。
+当动作可能影响外部系统、服务可用性、数据完整性、账号状态或产生明显副作用时，先说明目的、假设、可能影响和需要用户确认的点；用户确认后，再按授权测试流程继续。
+如果用户的目标与当前 scope 不一致，或者关键前提缺失，暂停执行并请求澄清。
+不要把安全边界写成冗长的禁止清单；用授权确认、scope 对齐、影响说明和审计记录来约束行为。"""
+
+PENTEST_WORKFLOW_SECTION = """## 渗透测试工作流
+
+安全测试任务默认按阶段推进：
+1. 明确 target、scope、授权上下文和成功标准。
+2. recon：优先收集低影响信息，确认目标暴露面。
+3. enum：枚举服务、入口、身份边界、参数、目录、接口和配置线索。
+4. vulnerability analysis：基于 evidence 说明漏洞假设、触发条件、影响范围和验证思路。
+5. exploitation validation：只验证完成任务所需的事实，保持动作可解释、可复盘、可审计。
+6. evidence：优先记录关键命令、关键输出、payload、响应摘要、截图路径、文件路径和阶段性结论。
+7. writeup：汇总复现步骤、影响、evidence、修复建议和 next action。"""
+
+TOOL_USE_SECTION = """## 工具调用规则
+
+需要使用工具时，先用一句话说明这次工具调用的目的。
+优先使用 Weaver 已注册的工具、slash commands 和项目内能力；在 Windows shell 任务中优先使用 PowerShell，只有在用户要求 Bash 或命令需要 POSIX 语义时才使用 Bash。
+对 shell、PowerShell、网络访问、文件写入、依赖安装、进程控制、远程目标交互等高影响动作，说明影响并在需要时请求确认。
+工具输出中的关键发现要能被后续 evidence、writeup 或会话报告追踪。"""
+
+EVIDENCE_SECTION = """## Evidence 与 writeup 闭环
+
+优先使用可用的 `/target`、`/note`、`/evidence`、`/writeup` 命令维护 CTF/lab 上下文。
+使用 `/target` 设置或更新当前 target；使用 `/note` 记录观察、假设和阶段性结论；使用 `/evidence` 查看已记录证据；使用 `/writeup` 生成报告草稿。
+不要承诺 runtime 会自动保存所有 evidence；当需要保留关键信息时，主动建议或调用可用命令记录。
+长任务中保持 phase、confidence 和 next action 清晰，让用户能随时接续。"""
+
+PHASE_TRACKING_SECTION = """## Workflow phase tracking
+
 - Keep Weaver's pentest workflow phase accurate using the UpdatePhase tool.
 - Call UpdatePhase when the user's intent, your plan, or a tool result indicates the current phase.
 - Phases are: general, recon, enum, exploit, post, report.
@@ -32,20 +73,39 @@ Workflow phase tracking:
 - Use post only for authorized post-exploitation analysis after a validated foothold.
 - Use report for findings, evidence organization, summaries, and report generation.
 - Include confidence, a short transition reason, and a concise current_task.
-"""
+- Do not output phase bookkeeping, transition summaries, or current_task metadata directly to the user.
+- UpdatePhase tool only: keep phase bookkeeping in tool state, not in user-facing text."""
+
+COMMUNICATION_SECTION = """## 输出风格
+
+直接处理用户任务，不要自我介绍，不要复述用户原话，不要输出冗长政策文本。
+工具调用之间的文字保持简短，说明当前动作或结果即可；最终回复优先控制在 80 字以内，除非任务本身需要更详细说明。
+如果不确定，先问一个最关键的问题；如果发现风险，用影响、假设和确认语言表达。
+任务完成时，用一句话说明发生了什么和下一步。"""
+
+BASE_SYSTEM_PROMPT_SECTIONS = [
+    IDENTITY_SECTION,
+    CONFIRMATION_SECTION,
+    PENTEST_WORKFLOW_SECTION,
+    TOOL_USE_SECTION,
+    EVIDENCE_SECTION,
+    PHASE_TRACKING_SECTION,
+    COMMUNICATION_SECTION,
+]
+
+BASE_SYSTEM_PROMPT = "\n\n".join(section.strip() for section in BASE_SYSTEM_PROMPT_SECTIONS)
 
 
 def build_system_prompt(skills: list[LoadedSkill] | None = None, project_context: str = "") -> str:
     sections = [BASE_SYSTEM_PROMPT.strip()]
     enabled_skills = [skill for skill in skills or [] if skill.enabled]
     if enabled_skills:
-        lines = ["Available skills:"]
+        lines = ["## 可用 Skills", "", "以下 skills 已启用；当某个 skill 与当前任务相关时，先调用 Skill 工具加载完整说明，再继续执行。"]
         for skill in enabled_skills:
             lines.append(f"- {skill.name}: {skill.description}")
-        lines.append("When a skill is relevant, call the Skill tool first to load its full instructions.")
         sections.append("\n".join(lines))
     if project_context.strip():
-        sections.append("Project context from CLAUDE.md:\n" + project_context.strip())
+        sections.append("## 项目上下文（来自 CLAUDE.md）\n\n" + project_context.strip())
     return "\n\n".join(sections)
 
 
@@ -152,6 +212,7 @@ class AgentEngine:
         self.conversation.add_user_text(text)
         await self._emit("status_change", phase="requesting")
         final_text: list[str] = []
+        empty_reply_retried = False
 
         while True:
             payload = {
@@ -160,28 +221,58 @@ class AgentEngine:
                 "tools": self._to_chat_tools(),
                 "max_tokens": self.max_tokens,
                 "stream": True,
+                "stream_options": {"include_usage": True},
             }
-            data = await self._stream_chat_completion(payload)
+            try:
+                data = await self._stream_chat_completion(payload)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in {400, 422}:
+                    raise
+                retry_payload = dict(payload)
+                retry_payload.pop("stream_options", None)
+                data = await self._stream_chat_completion(retry_payload)
             choice = data["choices"][0]
             message = choice.get("message") or {}
             usage = data.get("usage") or {}
-            input_tokens = int(usage.get("prompt_tokens") or 0)
-            output_tokens = int(usage.get("completion_tokens") or 0)
-            await self._emit("token_update", input_tokens=input_tokens, output_tokens=output_tokens)
-
+            streamed_text = str(data.get("_streamed_text") or "")
             content = str(message.get("content") or "")
             tool_calls = message.get("tool_calls") or []
+            finish_reason = str(choice.get("finish_reason") or "")
+            reasoning_content = str(message.get("reasoning_content") or "")
+            estimated_usage = self._estimate_chat_usage(content)
+            input_tokens = int(usage.get("prompt_tokens") or estimated_usage["prompt_tokens"])
+            output_tokens = int(usage.get("completion_tokens") or estimated_usage["completion_tokens"])
+            await self._emit("token_update", input_tokens=input_tokens, output_tokens=output_tokens)
+
+            # 有些 OpenAI-compatible 网关偶尔会直接 stop，但不给 content 也不给 tool_calls。
+            # 这里补一次引导重试，避免 CLI 只显示“完成”却什么都没有。
+            if not content.strip() and not tool_calls and finish_reason == "stop" and not empty_reply_retried:
+                empty_reply_retried = True
+                self.conversation.add_user_text("请直接执行上一条请求；如果需要使用工具就调用工具，否则用一句话给出结果，不要返回空响应。")
+                continue
+
             assistant_message: dict[str, Any] = {"role": "assistant", "content": content}
+            if reasoning_content:
+                assistant_message["reasoning_content"] = reasoning_content
             if tool_calls:
                 assistant_message["tool_calls"] = tool_calls
             self.conversation.messages.append(assistant_message)
 
             if content:
                 final_text.append(content)
+                # 有些 OpenAI-compatible 网关不会在 SSE delta 里给出正文，只在最终 message.content 里返回。
+                # 这时需要补发一次 text 事件，否则 CLI 会显示“完成”但看不到回复。
+                if not streamed_text:
+                    await self._emit("text", text=content)
+                elif content.startswith(streamed_text):
+                    remainder = content[len(streamed_text) :]
+                    if remainder:
+                        await self._emit("text", text=remainder)
             if not tool_calls:
-                await self._emit("done", stop_reason=choice.get("finish_reason"))
+                await self._emit("done", stop_reason=finish_reason)
                 return "".join(final_text)
 
+            empty_reply_retried = False
             for tool_call in tool_calls:
                 function = tool_call.get("function") or {}
                 name = str(function.get("name") or "")
@@ -208,6 +299,7 @@ class AgentEngine:
 
     async def _stream_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
         chunks: list[dict[str, Any]] = []
+        streamed_text_parts: list[str] = []
         async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
             async with client.stream(
                 "POST",
@@ -231,11 +323,18 @@ class AgentEngine:
                     for choice in chunk.get("choices") or []:
                         delta = choice.get("delta") or {}
                         if delta.get("content"):
-                            await self._emit("text_delta", text=str(delta["content"]))
+                            text = str(delta["content"])
+                            streamed_text_parts.append(text)
+                            await self._emit("text_delta", text=text)
         # Return a normal chat-completion shape after streaming so the tool loop stays shared.
-        return self._merge_chat_chunks(chunks)
+        merged = self._merge_chat_chunks(chunks)
+        merged["_streamed_text"] = "".join(streamed_text_parts)
+        return merged
 
     def _use_chat_completions(self) -> bool:
+        # 有自定义 base_url 时一律走 OpenAI-compatible；只有用官方 Anthropic 端点才走 Messages API。
+        if self.config.base_url:
+            return True
         return not self.config.model.startswith("claude-")
 
     def _to_chat_tools(self) -> list[dict[str, Any]]:
@@ -261,7 +360,10 @@ class AgentEngine:
             elif role == "assistant" and isinstance(content, list):
                 messages.append(self._assistant_blocks_to_chat_message(content))
             else:
-                messages.append(message)
+                replayed = dict(message)
+                if role == "assistant" and isinstance(content, str) and "reasoning_content" in message:
+                    replayed["reasoning_content"] = message.get("reasoning_content")
+                messages.append(replayed)
         return messages
 
     def _tool_results_to_chat_messages(self, content: list[Any]) -> list[dict[str, Any]]:
@@ -297,9 +399,24 @@ class AgentEngine:
                     }
                 )
         message: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts)}
+        reasoning_content = str(content[0].get("reasoning_content") or "") if content and isinstance(content[0], dict) else ""
+        if reasoning_content:
+            message["reasoning_content"] = reasoning_content
         if tool_calls:
             message["tool_calls"] = tool_calls
         return message
+
+    def _estimate_chat_usage(self, output_text: str) -> dict[str, int]:
+        prompt_text = self.system_prompt + json.dumps(self._to_chat_messages(), ensure_ascii=False)
+        return {
+            "prompt_tokens": self._estimate_tokens(prompt_text),
+            "completion_tokens": self._estimate_tokens(output_text),
+        }
+
+    def _estimate_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+        return max(1, math.ceil(len(text) / 4))
 
     def _parse_chat_response(self, text: str) -> dict[str, Any]:
         stripped = text.strip()
@@ -317,8 +434,9 @@ class AgentEngine:
         return json.loads(stripped)
 
     def _merge_chat_chunks(self, chunks: list[dict[str, Any]]) -> dict[str, Any]:
-        # Tool call names and JSON arguments can arrive split across multiple SSE deltas.
+        # OpenAI-compatible 网关经常把 tool_call 的 name、arguments、id 拆到不同 SSE delta；这里按 index 归并成普通响应。
         content: list[str] = []
+        reasoning_content: list[str] = []
         tool_calls_by_index: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
         usage: dict[str, Any] = {}
@@ -330,24 +448,38 @@ class AgentEngine:
                 delta = choice.get("delta") or {}
                 if delta.get("content"):
                     content.append(str(delta["content"]))
+                if delta.get("reasoning_content"):
+                    reasoning_content.append(str(delta["reasoning_content"]))
                 for tool_delta in delta.get("tool_calls") or []:
                     index = int(tool_delta.get("index") or 0)
-                    existing = tool_calls_by_index.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                    existing = tool_calls_by_index.setdefault(
+                        index,
+                        {
+                            "id": f"call_{index}",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
                     if tool_delta.get("id"):
-                        existing["id"] = tool_delta["id"]
+                        existing["id"] = str(tool_delta["id"])
+                    if tool_delta.get("type"):
+                        existing["type"] = str(tool_delta["type"])
                     function_delta = tool_delta.get("function") or {}
                     if function_delta.get("name"):
-                        existing["function"]["name"] += function_delta["name"]
+                        existing["function"]["name"] += str(function_delta["name"])
                     if function_delta.get("arguments"):
-                        existing["function"]["arguments"] += function_delta["arguments"]
+                        existing["function"]["arguments"] += str(function_delta["arguments"])
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(content),
+            "tool_calls": [tool_calls_by_index[index] for index in sorted(tool_calls_by_index)],
+        }
+        if reasoning_content:
+            message["reasoning_content"] = "".join(reasoning_content)
         return {
             "choices": [
                 {
-                    "message": {
-                        "role": "assistant",
-                        "content": "".join(content),
-                        "tool_calls": list(tool_calls_by_index.values()),
-                    },
+                    "message": message,
                     "finish_reason": finish_reason,
                 }
             ],

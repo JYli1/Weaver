@@ -28,8 +28,8 @@ from weaver_py.tui.theme import (
 class WeaverTuiApp(App[None]):
     CSS = """
     Screen {
-        background: #0B1020;
-        color: #E5E7EB;
+        background: #1A1A1A;
+        color: #E0DCD4;
     }
 
     #layout {
@@ -39,10 +39,10 @@ class WeaverTuiApp(App[None]):
 
     #status {
         height: 4;
-        border: solid #334155;
+        border: solid #3D3D3D;
         padding: 0 1;
-        color: #94A3B8;
-        background: #111827;
+        color: #8C8478;
+        background: #242424;
     }
 
     #body {
@@ -53,9 +53,9 @@ class WeaverTuiApp(App[None]):
     #messages {
         width: 2fr;
         height: 100%;
-        border: solid #334155;
+        border: solid #3D3D3D;
         padding: 0 1;
-        background: #0F172A;
+        background: #1E1E1E;
     }
 
     .message {
@@ -63,40 +63,40 @@ class WeaverTuiApp(App[None]):
     }
 
     .system-message {
-        color: #94A3B8;
+        color: #8C8478;
     }
 
     .error-message {
-        color: #F87171;
+        color: #C75450;
     }
 
     #tools {
         width: 1fr;
         height: 100%;
         margin: 0 0 0 1;
-        border: solid #334155;
+        border: solid #3D3D3D;
         padding: 0 1;
-        color: #94A3B8;
-        background: #0F172A;
+        color: #8C8478;
+        background: #1E1E1E;
     }
 
     #statusbar {
         height: 3;
         margin: 1 0 0 0;
-        border: solid #334155;
+        border: solid #3D3D3D;
         padding: 0 1;
-        color: #94A3B8;
-        background: #111827;
+        color: #8C8478;
+        background: #242424;
     }
 
     #command-menu {
         height: auto;
         max-height: 7;
         margin: 1 0 0 0;
-        border: solid #334155;
+        border: solid #3D3D3D;
         padding: 0 2;
-        color: #94A3B8;
-        background: #111827;
+        color: #8C8478;
+        background: #242424;
         display: none;
     }
 
@@ -106,39 +106,39 @@ class WeaverTuiApp(App[None]):
 
     #input {
         height: 3;
-        border: round #334155;
+        border: round #3D3D3D;
         padding: 0 1;
-        color: #E5E7EB;
-        background: #0B1020;
+        color: #E0DCD4;
+        background: #1A1A1A;
     }
 
     #input.phase-recon {
-        border: round #60A5FA;
+        border: round #6BAFB2;
     }
 
     #input.phase-enum {
-        border: round #38BDF8;
+        border: round #7C9FD4;
     }
 
     #input.phase-exploit {
-        border: round #F87171;
+        border: round #C75450;
     }
 
     #input.phase-post {
-        border: round #64748B;
+        border: round #D4A054;
     }
 
     #input.phase-report {
-        border: round #60A5FA;
+        border: round #8C8478;
     }
 
     #input.phase-general {
-        border: round #334155;
+        border: round #3D3D3D;
     }
 
     #input:disabled {
-        border: round #334155;
-        color: #94A3B8;
+        border: round #3D3D3D;
+        color: #8C8478;
     }
     """
 

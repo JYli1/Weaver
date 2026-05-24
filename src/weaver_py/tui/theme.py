@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import re
 
+# CLI / TUI 共用主题色：
+# - 基础色继续服务 Markdown、状态行和工具 transcript。
+# - retro 相关颜色用于普通 CLI 的启动 banner、用户消息块和底部输入区。
+# - accent_dim 保留给 CTF/lab 工具日志和旧状态行，避免主仓库已有 UI 语义丢失。
+# - 颜色值保持集中管理，后续如果开放主题配置，必须同步补充中文配置说明。
 PALETTE = {
     "bg": "#0B1020",
     "surface": "#111827",
@@ -11,12 +16,18 @@ PALETTE = {
     "text": "#E5E7EB",
     "muted": "#94A3B8",
     "accent": "#8B5CF6",
+    "accent_dim": "#64748B",
     "accent_2": "#60A5FA",
     "accent_soft": "#A78BFA",
     "cyan": "#38BDF8",
     "success": "#22C55E",
     "warning": "#F59E0B",
     "error": "#F87171",
+    "amber": "#FACC15",
+    "orange": "#F97316",
+    "line_dim": "#475569",
+    "user_bg": "#1E293B",
+    "user_border": "#67E8F9",
 }
 
 PHASE_STYLES = {

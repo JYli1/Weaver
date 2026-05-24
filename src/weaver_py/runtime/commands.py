@@ -6,6 +6,7 @@ from typing import Any
 
 from weaver_py.config import load_config
 from weaver_py.mcp import McpManager
+from weaver_py.security import build_writeup
 
 from .migration import migrate_claude_project_config
 from .report import save_session_report
@@ -36,6 +37,10 @@ COMMANDS = [
     SlashCommand("/skills", "查看和重载 skills"),
     SlashCommand("/mcp", "查看和重载 MCP 服务器"),
     SlashCommand("/permissions", "显示当前权限和安全策略"),
+    SlashCommand("/target", "设置当前 CTF/lab target"),
+    SlashCommand("/note", "添加当前题目 note"),
+    SlashCommand("/evidence", "查看当前 evidence"),
+    SlashCommand("/writeup", "生成 CTF/lab writeup 草稿"),
     SlashCommand("/init", "显示 Weaver 项目初始化建议"),
     SlashCommand("/help", "显示帮助信息"),
     SlashCommand("/exit", "正常退出并保存会话报告", aliases=("/quit", "exit", "quit")),
@@ -96,6 +101,28 @@ def handle_command(session: Any, prompt: str) -> CommandResult:
 
     if resolved.name == "/permissions":
         return CommandResult(handled=True, message=_permissions_message(session))
+
+    if resolved.name == "/target":
+        parts = command.split(maxsplit=1)
+        value = parts[1].strip() if len(parts) > 1 else ""
+        if not value:
+            return CommandResult(handled=True, message="用法：/target <URL、host、文件或题目目标>", is_error=True)
+        session.security.set_target(value)
+        return CommandResult(handled=True, message=f"Target 已设置：{session.security.target}")
+
+    if resolved.name == "/note":
+        parts = command.split(maxsplit=1)
+        value = parts[1].strip() if len(parts) > 1 else ""
+        if not value:
+            return CommandResult(handled=True, message="用法：/note <当前题目笔记>", is_error=True)
+        item = session.evidence.add_note(value, phase=session.current_phase)
+        return CommandResult(handled=True, message=f"已添加 note：{item.title}")
+
+    if resolved.name == "/evidence":
+        return CommandResult(handled=True, message="\n".join(session.evidence.render_lines()))
+
+    if resolved.name == "/writeup":
+        return CommandResult(handled=True, message=build_writeup(session.security, session.evidence))
 
     if resolved.name == "/init":
         if command.split()[1:] == ["migrate-claude"]:
@@ -161,7 +188,7 @@ def _mcp_message(session: Any, command: str) -> str:
 def _permissions_message(session: Any) -> str:
     return (
         "权限：\n"
-        "  Bash 安全策略已启用，破坏性或高风险命令会被拒绝或要求确认。\n"
+        "  Shell 工具安全策略已启用，破坏性或高风险命令会被拒绝或要求确认。\n"
         "  工具调用会写入审计日志，敏感字段会先做脱敏。\n"
         "  审计日志：.weaver/audit/tools.jsonl\n"
         "  当前版本暂不保存按工具划分的 allowlist。"
@@ -181,7 +208,7 @@ def _init_message(session: Any) -> str:
         "  ---\n"
         "  name: web-recon\n"
         "  description: Web reconnaissance workflow guidance\n"
-        "  allowed-tools: [Read, Grep, Bash]\n"
+        "  allowed-tools: [Read, Grep, Bash, PowerShell]\n"
         "  ---"
     )
 

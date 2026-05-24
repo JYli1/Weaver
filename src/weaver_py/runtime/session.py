@@ -10,6 +10,7 @@ from weaver_py.agent import AgentEngine
 from weaver_py.agent.events import AgentEvent
 from weaver_py.config import WeaverConfig, load_config
 from weaver_py.mcp import McpManager
+from weaver_py.security import EvidenceStore, SecurityContext
 from weaver_py.skills import LoadedSkill, SkillLoader
 from weaver_py.tools import McpToolAdapter, SkillTool, ToolRegistry
 
@@ -43,6 +44,8 @@ class WeaverSession:
         self.phase_confidence = 0.0
         self.phase_reason = ""
         self.current_task = ""
+        self.security = SecurityContext()
+        self.evidence = EvidenceStore()
         self.tool_events: list[dict[str, Any]] = []
         self._external_event_handler = event_handler
         self.engine = AgentEngine(
@@ -112,6 +115,8 @@ class WeaverSession:
         self.phase_reason = ""
         self.current_task = ""
         self.tool_events.clear()
+        self.security.clear()
+        self.evidence.clear()
 
     async def handle_agent_event(self, event: AgentEvent) -> None:
         self.update_from_event(event)
@@ -126,13 +131,18 @@ class WeaverSession:
             self.input_tokens = int(event.data.get("input_tokens") or self.input_tokens)
             self.output_tokens = int(event.data.get("output_tokens") or self.output_tokens)
         elif event.type == "phase_update":
-            self.current_phase = str(event.data.get("phase") or "general")
+            raw_phase = str(event.data.get("phase") or "general")
             try:
-                self.phase_confidence = float(event.data.get("confidence") or 0.0)
+                raw_confidence = float(event.data.get("confidence") or 0.0)
             except (TypeError, ValueError):
-                self.phase_confidence = 0.0
-            self.phase_reason = str(event.data.get("reason") or "")
-            self.current_task = str(event.data.get("current_task") or "")
+                raw_confidence = 0.0
+            raw_reason = str(event.data.get("reason") or "")
+            raw_task = str(event.data.get("current_task") or "")
+            self.security.update_phase(raw_phase, raw_confidence, raw_reason, raw_task)
+            self.current_phase = self.security.phase
+            self.phase_confidence = self.security.phase_confidence
+            self.phase_reason = self.security.phase_reason
+            self.current_task = self.security.current_task
         elif event.type == "tool_start":
             name = str(event.data.get("name") or "tool")
             self.current_task = name
@@ -153,10 +163,13 @@ class WeaverSession:
         tools = ", ".join(schema["name"] for schema in self.registry.schemas())
         mcp_connected = sum(1 for state in self.mcp.states.values() if state.status == "connected")
         mcp_failed = sum(1 for state in self.mcp.states.values() if state.status == "failed")
+        target = self.security.target or "-"
+        next_action = self.security.next_action or "-"
         return (
             f"phase={self.current_phase} confidence={self.phase_confidence:.2f} "
             f"model={self.config.model} backend={self.config.backend.type}\n"
             f"root={self.root}\n"
+            f"mode={self.security.mode} target={target} evidence={self.evidence.count} next_action={next_action}\n"
             f"messages={message_count} tokens={total_tokens} current_task={self.current_task or '-'} "
             f"reason={self.phase_reason or '-'}\n"
             f"skills={len(self.skills)} mcp_servers={len(self.mcp.states)} connected={mcp_connected} failed={mcp_failed}\n"

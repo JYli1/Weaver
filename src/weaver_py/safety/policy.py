@@ -17,7 +17,8 @@ class CommandPolicy:
     def __init__(self) -> None:
         self._deny_patterns = [
             (re.compile(r"\brm\s+-rf\s+(/|~|\*|\.)"), "refuses destructive recursive deletion"),
-            (re.compile(r"\b(format|mkfs|fdisk|diskpart)\b", re.I), "refuses disk destructive commands"),
+            (re.compile(r"\b(mkfs|fdisk|diskpart)\b", re.I), "refuses disk destructive commands"),
+            (re.compile(r"(^|\s)format(\s+[a-z]:)?(\s|$)", re.I), "refuses disk destructive commands"),
             (re.compile(r"\b(dd)\b.*\bof=/dev/", re.I), "refuses raw disk writes"),
             (re.compile(r"\b(chmod\s+777|icacls\b.*Everyone)", re.I), "refuses broad permission weakening"),
             (re.compile(r"\b(fork\s*bomb|:\(\)\s*\{\s*:\|:)\b", re.I), "refuses denial-of-service patterns"),

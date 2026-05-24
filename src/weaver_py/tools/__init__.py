@@ -4,6 +4,7 @@ from .glob import GlobTool
 from .grep import GrepTool
 from .mcp import McpToolAdapter
 from .phase import UpdatePhaseTool
+from .powershell import PowerShellTool
 from .read import ReadTool
 from .registry import ToolRegistry
 from .skill import SkillTool
@@ -15,6 +16,7 @@ __all__ = [
     "GlobTool",
     "GrepTool",
     "McpToolAdapter",
+    "PowerShellTool",
     "ReadTool",
     "SkillTool",
     "ToolRegistry",

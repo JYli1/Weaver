@@ -24,13 +24,13 @@ def _decode_output(data: bytes) -> str:
     return data.decode(errors="replace")
 
 
-class BashTool(BaseTool):
-    name = "Bash"
-    description = "Execute a POSIX-style shell command with Weaver safety policy checks. On Windows this may run through the system shell and may not support bash-specific syntax unless an external bash environment is available."
+class PowerShellTool(BaseTool):
+    name = "PowerShell"
+    description = "Execute a Windows PowerShell command with Weaver safety policy checks. Prefer this tool on Windows for shell tasks."
     input_schema = {
         "type": "object",
         "properties": {
-            "command": {"type": "string", "description": "Command to execute."},
+            "command": {"type": "string", "description": "PowerShell command to execute."},
             "timeout": {"type": "integer", "description": "Timeout in milliseconds."},
             "cwd": {"type": "string", "description": "Working directory."},
             "confirmed": {"type": "boolean", "description": "Whether the user confirmed a risky command."},
@@ -56,7 +56,12 @@ class BashTool(BaseTool):
         cwd_value = input.get("cwd")
         cwd = str(Path(str(cwd_value)).expanduser()) if isinstance(cwd_value, str) else None
         try:
-            proc = await asyncio.create_subprocess_shell(
+            proc = await asyncio.create_subprocess_exec(
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
                 command,
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
